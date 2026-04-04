@@ -106,13 +106,10 @@ jobs:
           echo "" >> ${SDK_NAME}/feeds.conf
           echo "src-link apps `pwd`/apps/applications" >> ${SDK_NAME}/feeds.conf
 
-          # LinkEase feeds
-          echo "src-git nas https://github.com/linkease/nas-packages.git;master" >> ${SDK_NAME}/feeds.conf
-          echo "src-git nas_luci https://github.com/linkease/nas-packages-luci.git;main" >> ${SDK_NAME}/feeds.conf
-
+          # ✅ الاعتماد فقط على feeds.conf بدون تكرار
           cat apps/feeds.conf >> ${SDK_NAME}/feeds.conf
-          echo "" >> ${SDK_NAME}/feeds.conf
 
+          echo "" >> ${SDK_NAME}/feeds.conf
           echo "Final feeds.conf:"
           cat ${SDK_NAME}/feeds.conf
 
