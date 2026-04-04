@@ -106,7 +106,7 @@ jobs:
           echo "" >> ${SDK_NAME}/feeds.conf
           echo "src-link apps `pwd`/apps/applications" >> ${SDK_NAME}/feeds.conf
 
-          # 🔥 إضافة feeds الخاصة بـ LinkEase
+          # LinkEase feeds
           echo "src-git nas https://github.com/linkease/nas-packages.git;master" >> ${SDK_NAME}/feeds.conf
           echo "src-git nas_luci https://github.com/linkease/nas-packages-luci.git;main" >> ${SDK_NAME}/feeds.conf
 
@@ -144,7 +144,8 @@ jobs:
           make package/compile -j$(nproc)
 
       - name: Upload
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ipk-${{ matrix.target }}
           path: ~/openwrt-sdk/bin/packages/
+          retention-days: 7
