@@ -51,7 +51,7 @@ jobs:
           echo "::notice title=Apps::$apps"
 
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
           path: 'apps'
 
@@ -105,10 +105,7 @@ jobs:
         run: |
           echo "" >> ${SDK_NAME}/feeds.conf
           echo "src-link apps `pwd`/apps/applications" >> ${SDK_NAME}/feeds.conf
-
-          # ✅ الاعتماد فقط على feeds.conf بدون تكرار
           cat apps/feeds.conf >> ${SDK_NAME}/feeds.conf
-
           echo "" >> ${SDK_NAME}/feeds.conf
           echo "Final feeds.conf:"
           cat ${SDK_NAME}/feeds.conf
@@ -118,7 +115,6 @@ jobs:
           apps="${{ github.event.inputs.applications }}"
           cd ~/openwrt-sdk
           ./scripts/feeds update -a
-
           if [ "$apps" = "all" ]; then
             ./scripts/feeds install -a
           else
@@ -140,9 +136,19 @@ jobs:
           cd ~/openwrt-sdk
           make package/compile -j$(nproc)
 
-      - name: Upload
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ipk-${{ matrix.target }}
           path: ~/openwrt-sdk/bin/packages/
           retention-days: 7
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_id }}
+          name: OpenWrt IPKs Build ${{ github.run_id }}
+          files: |
+            ~/openwrt-sdk/bin/packages/**/*.ipk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
