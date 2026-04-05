@@ -1,96 +1,154 @@
-name: Build Quickstart IPKs
+name: Build IPKs
 
 on:
+  repository_dispatch:
   workflow_dispatch:
+    inputs:
+      applications:
+        description: 'build applications, eg: "luci-app-store luci-app-ddnsto". "all" means build all'
+        required: true
+        default: 'luci-app-quickstart'
+      target:
+        description: 'build target ["arm64", "x64", "mipsel", "all"]'
+        required: true
+        default: 'arm64'
 
 env:
   TZ: Asia/Shanghai
 
 jobs:
-  build:
-    name: Build Quickstart for ${{ matrix.target }}
+  matrix:
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Detect build target
+        id: set-matrix
+        env:
+          MATRIX_TARGET: ${{ github.event.inputs.target }}
+        run: |
+          if [ "x${MATRIX_TARGET}" = "x" -o "x${MATRIX_TARGET}" = "xall" ]; then \
+            echo "matrix={\"target\":[\"arm64\", \"x64\", \"mipsel\"]}" >> $GITHUB_OUTPUT; \
+          else \
+            targets=""; \
+            for target in ${MATRIX_TARGET}; do \
+              targets="$targets, \"$target\"";
+            done; \
+            echo "matrix={\"target\":[${targets#, }]}" >> $GITHUB_OUTPUT; \
+          fi
 
+  build:
+    needs: matrix
+    runs-on: ubuntu-latest
+    name: Build IPKs for ${{ matrix.target }}
     strategy:
-      fail-fast: false
-      matrix:
-        target: [arm64, x64, mipsel]
+      matrix: ${{fromJson(needs.matrix.outputs.matrix)}}
 
     steps:
+      - name: Job Info
+        run: |
+          apps="${{ github.event.inputs.applications }}"
+          echo "::notice title=Apps::$apps"
+
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          path: 'apps'
 
-      - name: Load Target Env
+      - name: Import Env
+        env:
+          MATRIX_TARGET: ${{ matrix.target }}
+        run: cat apps/.github/workflows/${MATRIX_TARGET}.env >> "$GITHUB_ENV"
+
+      - name: Initialization environment
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          cat .github/workflows/${{ matrix.target }}.env >> "$GITHUB_ENV"
+          sudo swapoff -a || true
+          sudo rm -rf /swapfile /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo find /etc/apt/sources.list.d ! -name 'ubuntu.sources' -type f -exec rm -f {} +
+          sudo -E apt-get -qq update
+          sudo -E apt-get -qq install build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev patch unzip zlib1g-dev libc6-dev-i386 subversion flex uglifyjs gcc-multilib g++-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint device-tree-compiler antlr3 gperf rsync
+          sudo -E apt-get -qq autoremove --purge
+          sudo -E apt-get -qq clean
+          sudo ln -s /usr/bin/python3 /usr/bin/python3.10 || true
+          sudo timedatectl set-timezone "$TZ"
 
-      - name: Setup Build Environment (Fixed)
+      - name: Download SDK
+        run: wget ${SDK_URL}${SDK_NAME}.tar.xz
+
+      - name: Unpack SDK
         run: |
-          sudo rm -rf /var/lib/apt/lists/*
-          sudo apt-get update -y
+          mkdir ~/openwrt-sdk
+          tar -xJf `pwd`/${SDK_NAME}.tar.xz --strip-components=1 -C ~/openwrt-sdk
+          ln -s ${HOME}/openwrt-sdk ${SDK_NAME}
 
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-          build-essential clang flex bison g++ gawk \
-          gcc-multilib g++-multilib gettext git libncurses5-dev \
-          libssl-dev python3 python3-distutils rsync unzip \
-          zlib1g-dev file wget libelf-dev ecj fastjar \
-          java-propose-classpath libncursesw5-dev
-
-      - name: Download Official OpenWrt SDK
+      - name: Clean Code
         run: |
-          wget ${SDK_URL}${SDK_NAME}.tar.xz
-          mkdir sdk
-          tar -xJf ${SDK_NAME}.tar.xz --strip-components=1 -C sdk
+          rm -f ${SDK_NAME}/package/linux/modules/*
+          rm -f ${SDK_NAME}/package/kernel/linux/modules/*
+          grep -lFr '$(call KernelPackage,' ${SDK_NAME}/package/linux | xargs -rn1 sed -i 's/ FILES:=/ XFILES:=/g' || true
+          grep -lFr '$(call KernelPackage,' ${SDK_NAME}/package/kernel | xargs -rn1 sed -i 's/ FILES:=/ XFILES:=/g' || true
+          find ${SDK_NAME}/target/linux -name 'modules.mk' | xargs -rn1 sed -i 's/ FILES:=/ XFILES:=/g' || true
+          grep 'src-git base ' ${SDK_NAME}/feeds.conf.default > ${SDK_NAME}/feeds.conf
+          grep 'src-git luci ' ${SDK_NAME}/feeds.conf.default >> ${SDK_NAME}/feeds.conf
 
-      - name: Configure Feeds (Official Only)
+      - name: Write Config
         run: |
-          cd sdk
-          cp feeds.conf.default feeds.conf
-
-          # Add custom quickstart app
-          echo "src-link custom $GITHUB_WORKSPACE/applications" >> feeds.conf
-
-          cat feeds.conf
-
-      - name: Update & Install Feeds
-        run: |
-          cd sdk
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
-          ./scripts/feeds install luci-app-quickstart
-
-      - name: Config (Enable dependencies automatically)
-        run: |
-          cd sdk
-          cat <<EOF > .config
-          CONFIG_ALL=y
-          CONFIG_ALL_NONSHARED=y
-          CONFIG_PACKAGE_luci-app-quickstart=y
+          cat <<EOF >${SDK_NAME}/.config
+          # CONFIG_SIGNED_PACKAGES is not set
+          CONFIG_LUCI_LANG_zh_Hans=y
+          CONFIG_LUCI_LANG_zh-cn=y
           EOF
 
+      - name: Load custom feeds
+        run: |
+          echo "" >> ${SDK_NAME}/feeds.conf
+          echo "src-link apps `pwd`/apps/applications" >> ${SDK_NAME}/feeds.conf
+          cat apps/feeds.conf >> ${SDK_NAME}/feeds.conf
+          echo "" >> ${SDK_NAME}/feeds.conf
+          echo "Final feeds.conf:"
+          cat ${SDK_NAME}/feeds.conf
+
+      - name: Update feeds
+        run: |
+          apps="${{ github.event.inputs.applications }}"
+          cd ~/openwrt-sdk
+          ./scripts/feeds update -a
+          if [ "$apps" = "all" ]; then
+            ./scripts/feeds install -a
+          else
+            ./scripts/feeds install ${apps}
+          fi
+
+      - name: Defconfig
+        run: |
+          cd ~/openwrt-sdk
           make defconfig
 
-      - name: Download Sources
+      - name: Download sources
         run: |
-          cd sdk
-          make download -j$(nproc) V=s
+          cd ~/openwrt-sdk
+          make download -j4
 
-      - name: Compile Quickstart + Dependencies
+      - name: Compile
         run: |
-          cd sdk
-          make package/luci-app-quickstart/compile -j$(nproc) V=s
+          cd ~/openwrt-sdk
+          make package/compile -j$(nproc)
 
-      - name: Upload IPKs
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: quickstart-${{ matrix.target }}
-          path: sdk/bin/packages/**/*.ipk
+          name: ipk-${{ matrix.target }}
+          path: ~/openwrt-sdk/bin/packages/
+          retention-days: 7
 
-      - name: Release
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: quickstart-${{ github.run_id }}
-          name: Quickstart Build ${{ github.run_id }}
-          files: sdk/bin/packages/**/*.ipk
+          tag_name: build-${{ github.run_id }}
+          name: OpenWrt IPKs Build ${{ github.run_id }}
+          files: |
+            ~/openwrt-sdk/bin/packages/**/*.ipk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
